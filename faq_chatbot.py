@@ -21,11 +21,22 @@ def get_bot_response(user_input, faqs):
     if any(t in user_lower for t in thanks):
         return "You're welcome! Let me know if you have any other questions."
 
-    for q, a in faqs:
-        if all(word in user_lower for word in q.split()):
-            return a
+    user_words = set(user_lower.split())
+    best_match = None
+    max_overlap = 0
 
-    return None
+    for q, a in faqs:
+        faq_words = set(q.split())
+        overlap = len(user_words.intersection(faq_words))
+        if overlap > max_overlap and overlap > 0:
+            max_overlap = overlap
+            best_match = a
+
+    if best_match:
+        return best_match
+    else:
+        return None
+
 
 def add_to_history(user_msg, bot_msg):
     st.session_state.chat_history.append(("user", user_msg))
