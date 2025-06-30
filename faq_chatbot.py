@@ -42,7 +42,7 @@ def get_answer(user_query):
 
     # Call OpenAI Chat API
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": "You are a helpful support assistant. Answer based only on the provided context."},
             {"role": "user", "content": f"Context: {context}\n\nQuestion: {user_query}"}
