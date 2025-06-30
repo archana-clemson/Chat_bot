@@ -1,97 +1,73 @@
 import streamlit as st
-import openai
-import faiss
-import numpy as np
-import re
+from openai import OpenAI
 from sentence_transformers import SentenceTransformer
+import faiss
+import os
 
-# Load OpenAI API key from Streamlit secrets (set in .streamlit/secrets.toml)
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# Load OpenAI client
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.set_page_config(page_title="FAQ Chatbot", layout="centered")
-st.title("🤖 FAQ Chatbot")
-st.write("Ask a question and get an answer based on your FAQ document.")
+# Load FAQs from file
+def load_faq(filepath="faq.txt"):
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+    faqs = content.strip().split("\n\n")
+    data = []
+    for faq in faqs:
+        if "\n" in faq:
+            q, a = faq.split("\n", 1)
+            data.append({"question": q.strip(), "answer": a.strip()})
+    return data
 
+faq_data = load_faq()
+
+# Embed questions using SentenceTransformer
 @st.cache_resource
-def load_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
+def embed_questions(faq_data):
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+    questions = [item["question"] for item in faq_data]
+    embeddings = model.encode(questions)
+    index = faiss.IndexFlatL2(embeddings[0].shape[0])
+    index.add(embeddings)
+    return model, index, questions
 
-model = load_model()
+model, index, questions = embed_questions(faq_data)
 
-def parse_faq(text):
-    """
-    Parse FAQ text with format like:
-    1. Question?
-    Answer...
+# Function to get the most relevant answer
+def get_answer(user_query):
+    query_embedding = model.encode([user_query])
+    D, I = index.search(query_embedding, k=1)
+    closest_q_idx = I[0][0]
+    context = faq_data[closest_q_idx]["answer"]
 
-    2. Question?
-    Answer...
-    """
-    # Split on numbered question pattern
-    entries = re.split(r'\n\d+\.\s', text.strip())
-    faq_pairs = []
-    for entry in entries:
-        if entry.strip() == "":
-            continue
-        # Split question and answer by first newline
-        parts = entry.split('\n', 1)
-        if len(parts) == 2:
-            question = parts[0].strip()
-            answer = parts[1].strip()
-            faq_pairs.append((question, answer))
-        else:
-            faq_pairs.append((parts[0].strip(), ""))
-    return faq_pairs
+    # Call OpenAI Chat API
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a helpful support assistant. Answer based only on the provided context."},
+            {"role": "user", "content": f"Context: {context}\n\nQuestion: {user_query}"}
+        ]
+    )
+    return response.choices[0].message.content
 
-@st.cache_data
-def load_faq(faq_file):
-    with open(faq_file, "r", encoding="utf-8") as f:
-        text = f.read()
-    faq_pairs = parse_faq(text)
-    faq_texts = [q + " " + a for q, a in faq_pairs]
+# Streamlit app UI
+st.set_page_config(page_title="FAQ Chatbot")
+st.title("📚 FlexCrew FAQ Chatbot")
+st.write("Ask me anything from the FAQ!")
 
-    embeddings = model.encode(faq_texts)
-    dimension = embeddings[0].shape[0]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(np.array(embeddings))
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-    return faq_pairs, faq_texts, index, embeddings
+# Chat input
+user_input = st.chat_input("Type your question here...")
 
-uploaded_file = st.file_uploader("📄 Upload your FAQ (.txt)", type=["txt"])
+if user_input:
+    with st.spinner("Thinking..."):
+        answer = get_answer(user_input)
+        st.session_state.chat_history.append(("user", user_input))
+        st.session_state.chat_history.append(("bot", answer))
 
-if uploaded_file:
-    with open("uploaded_faq.txt", "wb") as f:
-        f.write(uploaded_file.read())
-
-    faq_pairs, faq_texts, index, embeddings = load_faq("uploaded_faq.txt")
-
-    question = st.text_input("❓ Ask your question")
-
-    if question:
-        user_embedding = model.encode([question])
-        D, I = index.search(np.array(user_embedding), k=1)
-        top_idx = I[0][0]
-        context = faq_texts[top_idx]
-
-        prompt = f"""Answer the question based only on the FAQ below:
-
-FAQ:
-{context}
-
-User Question: {question}
-Answer:"""
-
-        with st.spinner("Thinking..."):
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant answering only from the FAQ."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            answer = response.choices[0].message.content.strip()
-            st.markdown(f"**💬 Answer:** {answer}")
-
-else:
-    st.info("Please upload a FAQ `.txt` file to start.")
-
+# Display chat history
+for sender, msg in st.session_state.chat_history:
+    with st.chat_message(sender):
+        st.markdown(msg)
